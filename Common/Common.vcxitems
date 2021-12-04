@@ -1,0 +1,28 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HasSharedItems>true</HasSharedItems>
+    <ItemsProjectGuid>{9821caec-1503-4888-83ad-fd1607107b62}</ItemsProjectGuid>
+    <ItemsRootNamespace>
+    </ItemsRootNamespace>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(MSBuildThisFileDirectory)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ProjectCapability Include="SourceItemsFromImports" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(MSBuildThisFileDirectory)cmdline.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)magic_enum.hpp" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)RingBuffer.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)RPkg.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)UDPSock.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="$(MSBuildThisFileDirectory)UDPSock.cpp" />
+  </ItemGroup>
+</Project>
