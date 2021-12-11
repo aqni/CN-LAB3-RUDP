@@ -2,8 +2,7 @@
 
 #include <cstring>
 #include <cstdint>
-#include <mutex>
-#include <atomic>
+#include <algorithm>
 
 namespace Size {
     constexpr uint32_t OVER = 0;
@@ -19,10 +18,14 @@ public:
     virtual ~RingBuffer() noexcept;
 
     inline uint32_t push(const T* data, uint32_t wSize) noexcept;
+    inline uint32_t push(uint32_t wSize);
     inline uint32_t pop(T* buf, uint32_t rSize) noexcept;
+    inline uint32_t pop(uint32_t rSize);
+    inline uint32_t set(uint32_t begin, const T* data, uint32_t wSize) noexcept;
     inline uint32_t get(uint32_t begin, T* buf, uint32_t rSize) noexcept;
     inline uint32_t begin() const noexcept { return out;}
     inline uint32_t end() const noexcept { return in; }
+
     inline uint32_t freeSize() const noexcept { return nSize - in + out;}
     inline bool empty() const noexcept { return in == out;}
     inline void reset() noexcept { in = out = 0;}
@@ -35,7 +38,6 @@ private:
     const uint32_t nSize;
     uint32_t in;
     uint32_t out;
-    std::mutex mtx;
 };
 
 template <typename T>
@@ -73,15 +75,40 @@ inline uint32_t RingBuffer<T>::AlignedRoundup(uint32_t val) noexcept
     return val;
 }
 
-template <typename T>
-inline uint32_t RingBuffer<T>::push(const T* data, uint32_t wSize) noexcept
+template<typename T>
+inline uint32_t RingBuffer<T>::set(uint32_t begin, const T* data, uint32_t wSize) noexcept
 {
-    std::lock_guard<std::mutex> guard(mtx);
-    wSize = std::min(wSize, nSize - in + out);
-    uint32_t start = in & (nSize - 1);
+    wSize = std::min(wSize, nSize - begin + out);
+    uint32_t start = begin & (nSize - 1);
     uint32_t l = std::min(wSize, nSize - start);
     memcpy(pBuffer + start, data, l);
     memcpy(pBuffer, data + l, wSize - l);
+    return wSize;
+}
+
+template<typename T>
+inline uint32_t RingBuffer<T>::get(uint32_t begin, T* buf, uint32_t rSize) noexcept
+{
+    rSize = std::min(rSize, in - begin);
+    uint32_t start = begin & (nSize - 1);
+    uint32_t l = std::min(rSize, nSize - start);
+    memcpy(buf, pBuffer + start, l);
+    memcpy(buf + l, pBuffer, rSize - l);
+    return rSize;
+}
+
+template<typename T>
+inline uint32_t RingBuffer<T>::push(uint32_t wSize)
+{
+    wSize = std::min(wSize, nSize - in + out);
+    in += wSize;
+    return wSize;
+}
+
+template <typename T>
+inline uint32_t RingBuffer<T>::push(const T* data, uint32_t wSize) noexcept
+{
+    wSize = set(in,data,wSize);
     in += wSize;
     return wSize;
 }
@@ -89,12 +116,15 @@ inline uint32_t RingBuffer<T>::push(const T* data, uint32_t wSize) noexcept
 template <typename T>
 inline uint32_t RingBuffer<T>::pop(T* buf, uint32_t rSize) noexcept
 {
-    std::lock_guard<std::mutex> guard(mtx);
-    rSize = std::min(rSize, in - out);
-    uint32_t start = out & (nSize - 1);
-    uint32_t l = std::min(rSize, nSize - start);
-    memcpy(buf, pBuffer + start, l);
-    memcpy(buf + l, pBuffer, rSize - l);
+    rSize = get(out,buf,rSize);
     out += rSize;
-    return l;
+    return rSize;
+}
+
+template<typename T>
+inline uint32_t RingBuffer<T>::pop(uint32_t rSize)
+{
+    rSize = std::min(rSize, in - out);
+    out += rSize;
+    return rSize;
 }

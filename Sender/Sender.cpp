@@ -25,16 +25,11 @@ int main(int argc, char*argv[])
     cmdline::parser argp;
     argp.add<string>("file", 'f', "the file to send", false, "1.jpg");
     argp.add<string>("addr", 'i', "the ip address to connect", false, "127.0.0.1");
-    argp.add<int>("port", 'p', "port number", false, 10100, cmdline::range(1, 65535));
+    argp.add<int>("port", 'p', "port number", false, 12300, cmdline::range(1, 65535));
     argp.parse_check(argc, argv);
     string filename = argp.get<string>("file");
     string addr = argp.get<string>("addr");
     uint16_t port = argp.get<int>("port");
-
-    //send filename
-    printf("start to send filename.\n");
-
-    printf("succeed to send filename.\n");
 
     //Open file
     ifstream infile = ifstream(filepath+filename, ios::binary);

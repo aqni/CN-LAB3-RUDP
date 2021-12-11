@@ -2,18 +2,24 @@
 #include <chrono>
 #include "magic_enum.hpp"
 
+
 using namespace std;
 using namespace chrono;
+using namespace magic_enum;
 
 RRecv::RRecv(const IPv4Addr& addr, uint16_t port)
 	:myAddr(addr),myPort(port),buffer(Size::BYTE_32K),socket(),state(State::closed), mgrThrd()
 {
-	this->sPkgBuf = new char[maxPkgSize()];
 	this->rPkgBuf = new char[maxPkgSize()];
 	this->socket.bind(myAddr,myPort);
-	this->listen();
+	setState(State::listening);
 	thread temp(&RRecv::manager, this);
 	mgrThrd.swap(temp);
+}
+
+RRecv::~RRecv()
+{
+	delete[] rPkgBuf;
 }
 
 uint32_t RRecv::recv(char* buf, uint32_t size)
@@ -22,7 +28,7 @@ uint32_t RRecv::recv(char* buf, uint32_t size)
 	while (num == 0 && state.load() != State::closed) {
 		num= buffer.pop(buf, size);
 	}
-	printf("[LOG]: user recv %d bytes.\n",num);
+	printf("[LOG]: <USER> recv %d bytes.\n",num);
 	return num;
 }
 
@@ -35,82 +41,137 @@ void RRecv::close()
 
 void RRecv::manager()
 {
-	printf("[LOG]: manager thread start.\n");
+	printf("[LOG]: START manager thread start.\n");
 	while (true) {
-		IPv4Addr sourceIP;
-		uint16_t sourcePort;
 		State oldState = state.load();
+		RPkg* rPkg = new(rPkgBuf) RPkg();
 		switch (oldState) {
 		default:
 			printf("[ERR]: unexpected state(%s)!\n", magic_enum::enum_name(oldState).data());
 			exit(EXIT_FAILURE);
 		case State::closed:
 			break;
+		case State::listening:
 		case State::recv:
-			auto timeout = milliseconds(10000);
-			auto rnum = socket.recvfrom(rPkgBuf, maxPkgSize(), sourceIP, sourcePort, timeout);
-			if (rnum == 0) {
-				printf("[LOG]: recv timeout: %lld ms.\n", timeout.count());
-				continue;
+			rPkg = recvPkg();
+			printf("[LOG]: RECV [%d,%d), flags=%d.\n",rPkg->getSEQ(), rPkg->getSEQ()+rPkg->getBodySize(),rPkg->flags);
+			if (rPkg->flags & RPkg::F_SYN) {
+				nextACK = rPkg->getSEQ();
+				sendAck(nextACK, getWindow());
+				setState(State::recv);
 			}
-			RPkg* rPkg = reinterpret_cast<RPkg*>(rPkgBuf);
-			uint16_t checksum = rPkg->calCheckSum(targetAddr,myAddr,targetPort,myPort);
-			if (checksum != 0&& rPkg->checkSum!=0) {
-				printf("[LOG]: recv error pkg :checksum=%d\n", checksum);
-				continue;
+			if (rPkg->flags & RPkg::F_SEQ) {
+				deliverData(rPkg->getSEQ(),rPkg->getBodySize(),rPkg->data);
+				sendAck(nextACK, getWindow());
+				setState(State::recv);
 			}
-			if (rPkg->flags & RPkg::F_FIN) 
-			{
-				state.store(State::closed);
-				continue;
+			if (rPkg->flags & RPkg::F_FIN) {
+				nextACK = rPkg->getSEQ() + rPkg->getBodySize();
+				sendAck(nextACK, getWindow());
+				setState(State::closed);
 			}
-			uint32_t seq = rPkg->getSEQ();
-			printf("[LOG]: recv group=%d seq=%d", group, seq);
-			if (seq != group) {
-				printf(" group != seq.\n");
-				continue;
-			}
-			else {
-				uint32_t pushnum = buffer.freeSize();
-				uint16_t bodysize = rPkg->getBodySize();
-				if (pushnum < bodysize) {
-					seq = seq ? 0 : 1;
-					printf(" pushnum(%d) < pkgsize(%d) discard\n", pushnum, bodysize);
-				}
-				buffer.push(rPkg->data, bodysize);
-				printf(" deliver=%d\n", bodysize);
-				group = group ? 0 : 1;
-			}
-			RPkg* sPkg = new(sPkgBuf) RPkg();
-			sPkg->makeACK(seq);
-			sPkg->setCheckSum(sPkg->calCheckSum(myAddr, targetAddr, myPort, targetPort));
-			socket.sendto(sPkgBuf, sPkg->size(), targetAddr, targetPort);
-			printf("[LOG]: send ack=%d\n", seq);
 			continue;
 		}
 		break;
 	}
-	printf("[LOG]: manager thread end.\n");
+	printf("[LOG]: END manager thread end.\n");
 }
 
-void RRecv::listen()
+void RRecv::setState(State s)
 {
-	state.store(State::listening);
+	State old=state.exchange(s);
+	printf("[LOG]: %s-->%s | window=%d, nextACK=%d, buffer=[%d,%d).\n",
+		enum_name(old).data(),enum_name(s).data(),
+		getWindow(),nextACK,buffer.begin(),buffer.end());
+}
+
+RPkg* RRecv::recvPkg()
+{
+	IPv4Addr sourceIP;
+	uint16_t sourcePort;
+	RPkg* rPkg = reinterpret_cast<RPkg*>(rPkgBuf);
+	auto timeout = milliseconds(10000);
 	while (true) {
-		auto timeout = milliseconds(10000);
-		auto rnum = socket.recvfrom(rPkgBuf, maxPkgSize(), targetAddr, targetPort, timeout);
-		if (rnum==0) {
-			printf("[LOG]: listen timeout: %lld ms\n", timeout.count());
+		auto rnum = socket.recvfrom(rPkgBuf, maxPkgSize(), sourceIP, sourcePort, timeout);
+		if (rnum == 0) {
+			printf("[LOG]: TIMEOUT recv timeout: %lld ms.\n", timeout.count());
 			continue;
 		}
-		RPkg* rPkg = reinterpret_cast<RPkg*>(rPkgBuf);
-		if (rPkg->flags & RPkg::F_SYN) {
-			RPkg* sPkg = new(sPkgBuf) RPkg();
-			sPkg->makeACK(0);
-			socket.sendto(sPkgBuf, sPkg->size(), targetAddr, targetPort);
-			break;
+		if (rnum != rPkg->size()) {
+			printf("[ERR]: recv %d bytes, but pkssize=%d.\n", rnum, rPkg->size());
+			exit(EXIT_FAILURE);
+		}
+		if (targetPort == 0) { //如果是第一次连接，则设置对方地址端口
+			targetAddr.addr = sourceIP.addr;
+			targetPort = sourcePort;
+			printf("[LOG]: set target: %s:%d.\n",targetAddr.to_string().c_str(), targetPort);
+		}
+		if (sourceIP.addr != targetAddr.addr || sourcePort != targetPort) { //必须是对方的地址端口发送的UDP数据
+			printf("[LOG]: recv from %s:%d, but target is %s:%d.\n",
+				sourceIP.to_string().c_str(), sourcePort, targetAddr.to_string().c_str(), targetPort);
+			continue;
+		}
+		if (uint16_t checksum= rPkg->calCheckSum(); checksum != 0 && rPkg->checkSum != 0) { //计算校验和
+			printf("[LOG]: recv error pkg :checksum=%d\n", checksum);
+			continue;
+		}
+		if (size_t size = rPkg->size(); rnum != size) {
+			printf("[LOG]: recv %zu bytes, but pkg size=%zu.\n", rnum, size);
+			continue;
+		}
+		break;
+	}
+	return rPkg;
+}
+
+void RRecv::sendAck(uint32_t ack, uint16_t window)
+{
+	RPkg sPkg;
+	sPkg.makeACK(nextACK, getWindow());
+	sPkg.setCheckSum(sPkg.calCheckSum());
+	socket.sendto((char*)&sPkg, sPkg.size(), targetAddr, targetPort);
+	printf("[LOG]: SEND ACK ,ack=%d, window=%d.\n", sPkg.getACK(), sPkg.getWindow());
+}
+
+//不支持超过4GB
+void RRecv::deliverData(uint32_t seq, uint16_t size, const char* data)
+{
+	if (seq <= nextACK) { //push data into buffer
+		uint32_t end = seq + size;
+		if (end <= nextACK) return;
+		uint32_t dataOffset = nextACK - seq;
+		uint32_t wSize = end - nextACK;
+		if (!cacheRanges.empty()) {
+			uint32_t nextCachedBegin = cacheRanges.front().first;
+			wSize = min(wSize, nextCachedBegin - nextACK);
+		}
+		uint32_t pushnum=buffer.push(data+dataOffset,wSize);
+		nextACK += pushnum;
+		printf("[LOG]: PUSH %d bytes into buffer, buffer:[%d,%d).\n",
+			pushnum,buffer.begin(), buffer.end());
+		while (!cacheRanges.empty()) {  //合并缓存
+			uint32_t nextCachedBegin = cacheRanges.front().first;
+			uint32_t nextCachedEnd = cacheRanges.front().second;
+			if (nextACK < nextCachedBegin) break;
+			if (nextACK < nextCachedEnd) {
+				uint32_t pushnum = buffer.push(nextCachedEnd - nextACK);
+				printf("[LOG]: PUSH %d bytes into buffer, buffer:[%d,%d).\n",
+					pushnum, buffer.begin(), buffer.end());
+				assert(pushnum == nextCachedEnd - nextACK);
+				nextACK = nextCachedEnd;
+			}
+			cacheRanges.pop_front();
+			printf("[LOG]: MERGE cache[%d,%d), nextack:%d.\n", nextCachedBegin, nextCachedEnd, nextACK);
 		}
 	}
-	state.store(State::recv);
-	printf("[LOG]: succeed to listen a connect from %s:%d.\n",targetAddr.to_string().c_str(),targetPort);
+	else { //cache data in buffer
+		uint32_t begin = buffer.end()+ seq - nextACK;
+		uint32_t setnum=buffer.set(begin,data,size);
+		auto range = make_pair(seq, seq + setnum);
+		printf("[LOG]: CACHE %d bytes in window:[%d,%d).\n", setnum,range.first,range.second);
+		auto iter = cacheRanges.begin();
+		while (iter!= cacheRanges.end() && iter->first < range.first) iter++;
+		cacheRanges.insert(iter,range);
+	}
 }
+
