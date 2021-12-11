@@ -6,17 +6,20 @@
 #include <thread>
 #include <chrono>
 #include <queue>
+#include <algorithm>
+#include <mutex>
 
 struct Timevt {
     std::chrono::time_point<std::chrono::system_clock> tp;
     uint32_t dataSeq;
     uint16_t dataLen;
-    uint16_t nTimeout;
-    Timevt(uint32_t dataSeq,uint16_t dataLen, uint8_t nTimeout,std::chrono::milliseconds ms)
-        :dataSeq(dataSeq),dataLen(dataLen),nTimeout(0), tp(ms + std::chrono::system_clock::now()) {}
+    uint8_t nTimeout;
+    uint8_t flag;
+    Timevt(uint32_t dataSeq,uint16_t dataLen, std::chrono::milliseconds ms,uint8_t nTimeout,uint8_t flags)
+        :dataSeq(dataSeq),dataLen(dataLen),nTimeout(nTimeout), tp(ms + std::chrono::system_clock::now()),flag(flags) {}
 };
 
-inline bool operator < (const Timevt& v1, const Timevt& v2) {
+inline bool operator > (const Timevt& v1, const Timevt& v2) {
     return v1.tp > v2.tp;
 }
 
@@ -29,7 +32,6 @@ public:
         closing,
         connecting,
         send,
-        wait,
     };
 
 public:
@@ -42,20 +44,21 @@ private:
     inline size_t maxPkgSize() const { return sizeof(RPkg) + MSS; }
     void manager();
     void connect();
-    //void setTimer(std::chrono::milliseconds ms, uint8_t nTimeout, uint32_t dataSeq, uint16_t dataLen);
-    //void timerProcess();
-    //void timeout(const Timevt& evt);
-    RPkg* recvPkg();
-    void doSend();
-    void doWait();
-    bool timeToClose();
-    bool checkPkg(RPkg*);
+    RPkg* recvACK();
+    uint32_t sendSeq(uint32_t seq,uint16_t size);
+    void sendSyn(uint32_t seq);
+    void sendFin(uint32_t seq);
+    void trySendPkg();
+    void wait();
     void closeConnection();
     std::chrono::milliseconds getRTO();
-    State getState() { return state; }
+    inline void setTimer(uint32_t seq, uint16_t size, uint8_t nTimeout, uint8_t flags);
+    std::chrono::milliseconds handleTimer(); //处理定时器，并返回下一定时器的时间
+    void processTimeout(const Timevt& evt);
     void setState(State s);
 private:
-    std::priority_queue<Timevt> timevts;
+    std::priority_queue<Timevt,std::vector<Timevt>,std::greater<Timevt>> timevts;
+    std::mutex timerMtx;
     State state;
     std::atomic_bool isClosing=false;
     RingBuffer<char> buffer;
@@ -64,14 +67,15 @@ private:
     IPv4Addr myAddr;
     uint16_t targetPort;
     uint16_t myPort;
-    uint16_t MSS=1024;
+    uint16_t MSS=10240;
     uint16_t nTimeout = 0;
-    uint16_t maxNTimeout = 10;
-    char* sPkgBuf;
+    uint16_t maxNTimeout = 6;
     char* rPkgBuf;
     std::thread mgrThrd;
-    std::mutex wlock;
 
     //stop to wait
-    uint32_t group=0;
+    uint32_t nextSeq = 0;
+    uint32_t window = 0;
+    unsigned repeatACK = 0;
+    uint32_t lastAck = 0;
 };

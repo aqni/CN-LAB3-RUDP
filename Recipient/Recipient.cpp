@@ -18,7 +18,7 @@ int main(int argc, char* argv[])
     //parse command line argument
     cmdline::parser argp;
     argp.add<string>("addr", 'i', "the ip address to connect", false, "127.0.0.1");
-    argp.add<int>("port", 'p', "port number", false, 10101, cmdline::range(1, 65535));
+    argp.add<int>("port", 'p', "port number", false, 12300, cmdline::range(1, 65535));
     argp.parse_check(argc, argv);
 
     string addr = argp.get<string>("addr");
@@ -26,8 +26,8 @@ int main(int argc, char* argv[])
 
     //start to recv file
     RRecv reci(addr, port);
-    auto recvnum = reci.recv(filebuffer, sizeof(filebuffer) - 1);
-    int n = strlen(filebuffer)+1;
+    size_t recvnum = reci.recv(filebuffer, sizeof(filebuffer) - 1);
+    size_t n = strlen(filebuffer)+1;
     string filename(filebuffer);
     //open the output file.
     ofstream outfile = ofstream(outpath+filename, ios::binary);
