@@ -73,7 +73,7 @@ private:
     char* rPkgBuf;
     std::thread mgrThrd;
 
-    //stop to wait
+    //window
     uint32_t nextSeq = 0;
     uint32_t window = 0;
     unsigned repeatACK = 0;
