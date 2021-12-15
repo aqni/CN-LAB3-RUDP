@@ -80,7 +80,7 @@ void RRecv::manager()
 void RRecv::setState(State s)
 {
 	State old=state.exchange(s);
-	printf("[LOG]: %s-->%s | window=%d, nextACK=%d, buffer=[%d,%d).\n",
+	printf("[LOG]: %s-->%s | rwnd=%d, nextACK=%d, buffer=[%d,%d).\n",
 		enum_name(old).data(),enum_name(s).data(),
 		getWindow(),nextACK,buffer.begin(),buffer.end());
 }
@@ -130,7 +130,7 @@ void RRecv::sendAck(uint32_t ack, uint16_t window)
 	sPkg.makeACK(nextACK, getWindow());
 	sPkg.setCheckSum(sPkg.calCheckSum());
 	socket.sendto((char*)&sPkg, sPkg.size(), targetAddr, targetPort);
-	printf("[LOG]: SEND ACK ,ack=%d, window=%d.\n", sPkg.getACK(), sPkg.getWindow());
+	printf("[LOG]: SEND ACK ,ack=%d, rwnd=%d.\n", sPkg.getACK(), sPkg.getWindow());
 }
 
 //不支持超过4GB
@@ -168,7 +168,7 @@ void RRecv::deliverData(uint32_t seq, uint16_t size, const char* data)
 		uint32_t begin = buffer.end()+ seq - nextACK;
 		uint32_t setnum=buffer.set(begin,data,size);
 		auto range = make_pair(seq, seq + setnum);
-		printf("[LOG]: CACHE %d bytes in window:[%d,%d).\n", setnum,range.first,range.second);
+		printf("[LOG]: CACHE %d bytes in rwnd:[%d,%d).\n", setnum,range.first,range.second);
 		auto iter = cacheRanges.begin();
 		while (iter!= cacheRanges.end() && iter->first < range.first) iter++;
 		cacheRanges.insert(iter,range);

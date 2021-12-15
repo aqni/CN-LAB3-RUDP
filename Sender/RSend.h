@@ -34,6 +34,13 @@ public:
         send,
     };
 
+    enum class CongestionState
+    {
+        start,
+        avoid,
+        fastRecovery,
+    };
+
 public:
     RSend(const IPv4Addr& addr, uint16_t port);
     ~RSend();
@@ -56,10 +63,16 @@ private:
     std::chrono::milliseconds handleTimer(); //处理定时器，并返回下一定时器的时间
     void processTimeout(const Timevt& evt);
     void setState(State s);
+
+    //CON 拥塞控制
+    void setCongestionState(CongestionState cs);
+    void updateCongestionWindow();
+
 private:
     std::priority_queue<Timevt, std::vector<Timevt>, std::greater<Timevt>> timevts;
     std::mutex timerMtx;
     State state;
+    CongestionState cState;
     std::atomic_bool isClosing = false;
     RingBuffer<char> buffer;
     UDPSock socket;
@@ -67,7 +80,7 @@ private:
     IPv4Addr myAddr;
     uint16_t targetPort;
     uint16_t myPort;
-    uint16_t MSS = 10240;
+    uint16_t MSS = SOCK_MSS;
     uint16_t nTimeout = 0;
     uint16_t maxNTimeout = 6;
     char* rPkgBuf;
@@ -75,7 +88,11 @@ private:
 
     //window
     uint32_t nextSeq = 0;
-    uint32_t window = 0;
-    unsigned repeatACK = 0;
+    uint32_t rwnd = 0;
+
+    //CON 拥塞控制
+    uint32_t cwnd = MSS;
+    uint32_t ssthresh=8*MSS;
+    unsigned dupACK = 0;//the count of duplicate ack.
     uint32_t lastAck = 0;
 };

@@ -39,7 +39,7 @@ private:
     IPv4Addr myAddr;
     uint16_t targetPort;
     uint16_t myPort;
-    uint16_t MSS=10240;
+    uint16_t MSS=SOCK_MSS;
     char* rPkgBuf;
     std::thread mgrThrd;
     uint32_t nextACK=-1;

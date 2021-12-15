@@ -5,6 +5,8 @@
 #include <string>
 #include <chrono>
 
+constexpr uint16_t SOCK_MSS = 1024;
+
 struct IPv4Addr
 {
     uint32_t addr;

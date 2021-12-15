@@ -2,6 +2,7 @@
 #include <iostream>
 #include "magic_enum.hpp"
 #include <random>
+#include <algorithm>
 
 using namespace std;
 using namespace chrono;
@@ -12,6 +13,8 @@ RSend::RSend(const IPv4Addr& addr, uint16_t port)
 {
 	this->rPkgBuf = new char[maxPkgSize()];
 	this->connect();
+
+	printf("[LOG]: <Congestion> INTI cwnd=%d ssthresh=%d dupACK=%d.\n",cwnd,ssthresh,dupACK);
 
 	//start the manager thread
 	thread temp(&RSend::manager, this);
@@ -57,7 +60,7 @@ void RSend::connect()
 		RPkg* rPkg = nullptr;
 		while (rPkg == nullptr) rPkg = recvACK();
 		if (rPkg->getACK()==nextSeq) {
-			window = rPkg->getWindow();
+			rwnd = rPkg->getWindow();
 			break;
 		}
 		else {
@@ -87,16 +90,16 @@ void RSend::closeConnection()
 void RSend::trySendPkg()
 {
 	while (true) {
-		int sendSize = min(
-			min(buffer.begin() + window - nextSeq/*窗口限制*/,buffer.end() - nextSeq/*缓冲区数量*/),
-			MSS
-		);
+		uint32_t remainRwnd = buffer.begin() + rwnd - nextSeq/*窗口限制*/;
+		uint32_t remainCached = buffer.end() - nextSeq/*缓冲区数量*/;
+		auto minArr = to_array({(uint32_t)MSS,remainRwnd,remainCached,rwnd});
+		uint16_t sendSize = *min_element(minArr.begin(),minArr.end());
 		if (!(sendSize>0)) break;
 		sendSize=sendSeq(nextSeq, sendSize);
 		setTimer(nextSeq, sendSize,0,RPkg::F_SEQ);
 		nextSeq += sendSize;
-		printf("[LOG]: STATE nextSeq=%d,sendBase=%d,window=%d,toSend=%d, buffer:[%d,%d).\n",
-			nextSeq, buffer.begin(),window,buffer.end()-nextSeq,buffer.begin(), buffer.end());
+		printf("[LOG]: STATE nextSeq=%d,sendBase=%d,rwnd=%d,toSend=%d, buffer:[%d,%d).\n",
+			nextSeq, buffer.begin(),rwnd,buffer.end()-nextSeq,buffer.begin(), buffer.end());
 	}
 }
 
@@ -105,26 +108,34 @@ void RSend::wait()
 	RPkg* rPkg = recvACK();
 	if (rPkg == nullptr)return;
 	uint32_t ack = rPkg->getACK();
-	window = rPkg->getWindow();
-	printf("[LOG]: RECV ACK ack=%d, nextSeq=%d, window=%d, buffer[%d,%d)\n", 
-		ack,nextSeq,window,buffer.begin(),buffer.end());
+	rwnd = rPkg->getWindow();
+	printf("[LOG]: RECV ACK ack=%d, nextSeq=%d, rwnd=%d, buffer[%d,%d)\n", 
+		ack,nextSeq,rwnd,buffer.begin(),buffer.end());
 
-	if (ack > buffer.begin()) { //if ack > sendbase
+	//CON 拥塞控制
+	if (ack > buffer.begin()) { //if new ACK
 		uint32_t popnum=buffer.pop(ack- buffer.begin());
 		printf("[LOG]: POP %d bytes from buffer. buffer:[%d,%d).\n", popnum,buffer.begin(),buffer.end());
-	}
-	else {
-		if (lastAck == ack) {
-			if (++repeatACK>=3) {
-				uint32_t sendnum=sendSeq(lastAck,MSS);
-				printf("[LOG]: REPEAT 3 ack=%d. send [%d,%d).\n", lastAck, lastAck, lastAck+ sendnum);
-				repeatACK = 0;
+		updateCongestionWindow();
+	} else {
+		if (lastAck == ack) { //if duplicate ACK
+			dupACK++;
+			printf("[LOG]: <Congestion> DUP_ACK ack=%d, dupNum=%d.\n", lastAck, dupACK);
+			if (cState == CongestionState::fastRecovery) {
+				cwnd = cwnd + MSS;
+				printf("[LOG]: <Congestion> DUP_ACK when fastRecovery cwnd+MSS->%d.\n", cwnd);
+			}else if (dupACK>=3) {
+				//enter fastRecovery
+				uint32_t sendnum = sendSeq(lastAck, MSS);
+				printf("[LOG]: <Congestion> DUP_3_ACK ack=%d. send [%d,%d).\n", lastAck, lastAck, lastAck + sendnum);
+				ssthresh = cwnd / 2;
+				cwnd = ssthresh + 3 * MSS;
+				setCongestionState(CongestionState::fastRecovery);
 			}
 		} else {
-			repeatACK = 0;
+			dupACK = 0;
 			lastAck = ack;
 		}
-
 	}
 }
 
@@ -218,6 +229,13 @@ void RSend::processTimeout(const Timevt& evt)
 			sendSyn(evt.dataSeq);
 		if (evt.flag & RPkg::F_FIN)
 			sendFin(evt.dataSeq);
+
+		//CON 拥塞控制
+		ssthresh = cwnd / 2;
+		cwnd = MSS;
+		dupACK = 0;
+		setCongestionState(CongestionState::start);
+
 		setTimer(evt.dataSeq, evt.dataLen, evt.nTimeout + 1, evt.flag);
 	}//else 否则已经被确认
 }
@@ -226,9 +244,44 @@ void RSend::setState(State s)
 {
 	State old = state;
 	state = s;
-	printf("[LOG]: %s-->%s | window=%d, nextSeq=%d, buffer=[%d,%d).\n",
+	printf("[LOG]: %s-->%s | rwnd=%d, nextSeq=%d, buffer=[%d,%d).\n",
 		enum_name(old).data(), enum_name(s).data(),
-		window, nextSeq, buffer.begin(), buffer.end());
+		rwnd, nextSeq, buffer.begin(), buffer.end());
+}
+
+void RSend::setCongestionState(CongestionState cs)
+{
+	//CON 拥塞控制
+	CongestionState old = cState;
+	cState = cs;
+	printf("[LOG]: <Congestion> %s-->%s | rwnd=%d, cwnd=%d, ssthresh=%d.\n",
+		enum_name(old).data(), enum_name(cs).data(),rwnd, cwnd, ssthresh);
+}
+
+//called when a new ack is received.
+void RSend::updateCongestionWindow()
+{
+	//CON 拥塞控制
+	printf("[LOG]: <Congestion> NEW_ACK when %s cwnd=%d ssthresh=%d, ", enum_name(cState).data(),cwnd, ssthresh);
+	switch (cState) {
+	case CongestionState::start:
+		cwnd += MSS;
+		printf("update cwnd=%d.\n", cwnd);
+		if (cwnd > ssthresh) {
+			printf("[LOG]: <Congestion> CWND_OVER cwnd=%d > ssthresh=%d.\n", cwnd, ssthresh);
+			setCongestionState(CongestionState::avoid);
+		}
+		break;
+	case CongestionState::avoid:
+		cwnd += MSS * (MSS / cwnd);
+		printf("update cwnd=%d.\n",cwnd);
+		break;
+	case CongestionState::fastRecovery:
+		cwnd = ssthresh;
+		dupACK = 0;
+		printf("update cwnd=%d, dupACK=%d.\n", cwnd, dupACK);
+		setCongestionState(CongestionState::avoid);
+	}
 }
 
 void RSend::manager()
