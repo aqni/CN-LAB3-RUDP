@@ -65,6 +65,8 @@ private:
     std::chrono::milliseconds handleTimer(); //处理定时器，并返回下一定时器的时间
     void processTimeout(const Timevt& evt);
     void setState(State s);
+    bool updateTimer(uint32_t seq, uint32_t ack);
+    void updateRTT(std::chrono::time_point<std::chrono::system_clock> send, std::chrono::time_point<std::chrono::system_clock> back);
 
     //CON 拥塞控制
     void setCongestionState(CongestionState cs);
