@@ -92,8 +92,9 @@ void RSend::trySendPkg()
 	while (true) {
 		uint32_t remainRwnd = buffer.begin() + rwnd - nextSeq/*窗口限制*/;
 		uint32_t remainCached = buffer.end() - nextSeq/*缓冲区数量*/;
-		auto minArr = to_array({(uint32_t)MSS,remainRwnd,remainCached,rwnd});
-		uint16_t sendSize = *min_element(minArr.begin(),minArr.end());
+		uint32_t reaminCwnd = buffer.begin() + cwnd - nextSeq;
+		auto minArr = to_array({ (uint32_t)MSS,remainRwnd,remainCached,reaminCwnd });
+		uint16_t sendSize = *min_element(minArr.begin(), minArr.end());
 		if (!(sendSize>0)) break;
 		sendSize=sendSeq(nextSeq, sendSize);
 		setTimer(nextSeq, sendSize,0,RPkg::F_SEQ);
@@ -111,7 +112,7 @@ void RSend::wait()
 	rwnd = rPkg->getWindow();
 	printf("[LOG]: RECV ACK ack=%d, nextSeq=%d, rwnd=%d, buffer[%d,%d)\n", 
 		ack,nextSeq,rwnd,buffer.begin(),buffer.end());
-
+	bool updated = updateTimer(rPkg->getSEQ(), ack);
 	//CON 拥塞控制
 	if (ack > buffer.begin()) { //if new ACK
 		uint32_t popnum=buffer.pop(ack- buffer.begin());
@@ -193,13 +194,14 @@ void RSend::sendFin(uint32_t seq)
 
 milliseconds RSend::getRTO()
 {
-	return milliseconds(10);
+	return milliseconds(max(rto, 1));
 }
 
 inline void RSend::setTimer(uint32_t seq, uint16_t size,uint8_t nTimeout,uint8_t flags)
 {
 	auto timeout = milliseconds(getRTO().count()<< nTimeout);
-	timevts.emplace(seq, size, timeout, nTimeout, flags);
+	timevts.push_back(Timevt(seq, size, timeout, nTimeout, flags));
+	push_heap(timevts.begin(), timevts.end(), greater<Timevt>());
 	printf("[LOG]: TIMER [%d,%d) in %lld ms, %d times,flag=%d.\n",seq,seq+size,timeout.count(), nTimeout,flags);
 }
 
@@ -207,12 +209,13 @@ milliseconds RSend::handleTimer()
 {
 	if (timevts.empty()) return milliseconds(10);
 	auto now = system_clock::now();
-	while (now > timevts.top().tp) {
-		processTimeout(timevts.top());
-		timevts.pop();
+	while (now > timevts.front().tp) {
+		processTimeout(timevts.front());
+		pop_heap(timevts.begin(), timevts.end(), greater<Timevt>());
+		timevts.pop_back();
 		if (timevts.empty()) return milliseconds(10);
 	}
-	return duration_cast<milliseconds>(timevts.top().tp - now);
+	return duration_cast<milliseconds>(timevts.front().tp - now);
 }
 
 void RSend::processTimeout(const Timevt& evt)
