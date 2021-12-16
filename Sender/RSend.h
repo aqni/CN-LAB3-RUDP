@@ -73,7 +73,7 @@ private:
     void updateCongestionWindow();
 
 private:
-    std::priority_queue<Timevt, std::vector<Timevt>, std::greater<Timevt>> timevts;
+    std::vector<Timevt> timevts;
     std::mutex timerMtx;
     State state;
     CongestionState cState;
