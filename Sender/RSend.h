@@ -11,10 +11,12 @@
 
 struct Timevt {
     std::chrono::time_point<std::chrono::system_clock> tp;
+    std::chrono::time_point<std::chrono::system_clock> sendTimestamp = std::chrono::system_clock::now();
     uint32_t dataSeq;
     uint16_t dataLen;
     uint8_t nTimeout;
     uint8_t flag;
+    bool acked = false;
     Timevt(uint32_t dataSeq, uint16_t dataLen, std::chrono::milliseconds ms, uint8_t nTimeout, uint8_t flags)
         :dataSeq(dataSeq), dataLen(dataLen), nTimeout(nTimeout), tp(ms + std::chrono::system_clock::now()), flag(flags) {}
 };
@@ -89,6 +91,8 @@ private:
     //window
     uint32_t nextSeq = 0;
     uint32_t rwnd = 0;
+    uint32_t rtt = 10; //ms
+    uint32_t rto = 20; //ms
 
     //CON ÓµÈû¿ØÖÆ
     uint32_t cwnd = MSS;
