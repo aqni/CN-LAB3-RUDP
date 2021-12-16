@@ -249,6 +249,34 @@ void RSend::setState(State s)
 		rwnd, nextSeq, buffer.begin(), buffer.end());
 }
 
+bool RSend::updateTimer(uint32_t seq, uint32_t ack)
+{
+	bool updated = false;
+	for (auto& evt : timevts) {
+		if (evt.acked) continue;
+		if (evt.flag != RPkg::F_SEQ) continue;
+		if (evt.dataSeq == seq && evt.dataSeq + evt.dataLen <= ack) {
+			evt.acked = true;
+			auto now = system_clock::now();
+			updateRTT(evt.sendTimestamp, now);
+			updated = true;
+		}
+	}
+	return updated;
+}
+
+void RSend::updateRTT(time_point<system_clock> send, time_point<system_clock> back)
+{
+	auto newRTT = duration_cast<milliseconds>(back - send);
+	double newRTTms = static_cast<double>(newRTT.count());
+	double oldRTTms = static_cast<double>(rtt);
+	double a = 0.125;
+	double RTT = (1 - a) * oldRTTms + a * newRTTms;
+	rtt = static_cast<uint32_t>(RTT);
+	rto = 2 * rtt;
+	printf("[LOG]: RTT rtt=%d,rto=%d.\n", rtt, rto);
+}
+
 void RSend::setCongestionState(CongestionState cs)
 {
 	//CON ÓµÈû¿ØÖÆ
