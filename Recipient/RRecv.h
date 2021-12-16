@@ -28,12 +28,12 @@ private:
     void setState(State s);
     inline uint16_t getWindow() { return buffer.freeSize(); }
     RPkg* recvPkg();
-    void sendAck(uint32_t ack, uint16_t window);
+    void sendAck(uint32_t ack, uint16_t window, uint32_t seq);
     void deliverData(uint32_t seq,uint16_t size,const char* data);
 private:
     std::atomic<State> state;
     RingBuffer<char> buffer;
-    std::list<std::pair<uint32_t, uint32_t>> cacheRanges;
+    std::list<std::pair<uint32_t, uint32_t>> cacheRanges{ std::make_pair(UINT32_MAX,UINT32_MAX) };
     UDPSock socket;
     IPv4Addr targetAddr;
     IPv4Addr myAddr;

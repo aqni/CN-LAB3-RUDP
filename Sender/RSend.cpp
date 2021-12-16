@@ -68,6 +68,7 @@ void RSend::connect()
 			exit(EXIT_FAILURE);
 		}
 	}
+	timevts.clear();
 	socket.getMyaddrPort(myAddr, myPort);
 	printf("[LOG]: <USER> BING in %s:%d.\n", myAddr.to_string().c_str(), myPort);
 	printf("[LOG]: <USER> CONNECT to host:%s:%d\n", targetAddr.to_string().c_str(), targetPort);
@@ -90,17 +91,18 @@ void RSend::closeConnection()
 void RSend::trySendPkg()
 {
 	while (true) {
-		uint32_t remainRwnd = buffer.begin() + rwnd - nextSeq/*窗口限制*/;
-		uint32_t remainCached = buffer.end() - nextSeq/*缓冲区数量*/;
-		uint32_t reaminCwnd = buffer.begin() + cwnd - nextSeq;
-		auto minArr = to_array({ (uint32_t)MSS,remainRwnd,remainCached,reaminCwnd });
+		int remainRwnd = buffer.begin() + rwnd - nextSeq/*窗口限制*/;
+		int remainCached = buffer.end() - nextSeq/*缓冲区数量*/;
+		int reaminCwnd = buffer.begin() + cwnd - nextSeq;
+		auto minArr = to_array({(int)MSS,max(remainRwnd,0),max(remainCached,0), max(reaminCwnd,0) });
 		uint16_t sendSize = *min_element(minArr.begin(), minArr.end());
 		if (!(sendSize>0)) break;
 		sendSize=sendSeq(nextSeq, sendSize);
 		setTimer(nextSeq, sendSize,0,RPkg::F_SEQ);
 		nextSeq += sendSize;
-		printf("[LOG]: STATE nextSeq=%d,sendBase=%d,rwnd=%d,toSend=%d, buffer:[%d,%d).\n",
-			nextSeq, buffer.begin(),rwnd,buffer.end()-nextSeq,buffer.begin(), buffer.end());
+		printf("[LOG]: STATE nextSeq=%d,sendBase=%d,rwnd=%d,cwnd=%d,toSend=%d, buffer:[%d,%d).\n",
+			nextSeq, buffer.begin(), rwnd, cwnd, buffer.end() - nextSeq, buffer.begin(), buffer.end());
+		fflush(stdout);
 	}
 }
 
@@ -112,12 +114,14 @@ void RSend::wait()
 	rwnd = rPkg->getWindow();
 	printf("[LOG]: RECV ACK ack=%d, nextSeq=%d, rwnd=%d, buffer[%d,%d)\n", 
 		ack,nextSeq,rwnd,buffer.begin(),buffer.end());
-	bool updated = updateTimer(rPkg->getSEQ(), ack);
+	bool updated = updateTimer(ack,rPkg->getSEQ());
+
 	//CON 拥塞控制
 	if (ack > buffer.begin()) { //if new ACK
 		uint32_t popnum=buffer.pop(ack- buffer.begin());
 		printf("[LOG]: POP %d bytes from buffer. buffer:[%d,%d).\n", popnum,buffer.begin(),buffer.end());
-		updateCongestionWindow();
+		if(updated)
+			updateCongestionWindow(ack);
 	} else {
 		if (lastAck == ack) { //if duplicate ACK
 			dupACK++;
@@ -132,6 +136,8 @@ void RSend::wait()
 				ssthresh = cwnd / 2;
 				cwnd = ssthresh + 3 * MSS;
 				setCongestionState(CongestionState::fastRecovery);
+
+				lastSeq = nextSeq;
 			}
 		} else {
 			dupACK = 0;
@@ -215,7 +221,7 @@ milliseconds RSend::handleTimer()
 		timevts.pop_back();
 		if (timevts.empty()) return milliseconds(10);
 	}
-	return duration_cast<milliseconds>(timevts.front().tp - now);
+	return max(duration_cast<milliseconds>(timevts.front().tp - now), milliseconds(1));
 }
 
 void RSend::processTimeout(const Timevt& evt)
@@ -252,17 +258,17 @@ void RSend::setState(State s)
 		rwnd, nextSeq, buffer.begin(), buffer.end());
 }
 
-bool RSend::updateTimer(uint32_t seq, uint32_t ack)
+bool RSend::updateTimer(uint32_t ack,uint32_t seq)
 {
 	bool updated = false;
 	for (auto& evt : timevts) {
 		if (evt.acked) continue;
 		if (evt.flag != RPkg::F_SEQ) continue;
-		if (evt.dataSeq == seq && evt.dataSeq + evt.dataLen <= ack) {
+		if (evt.dataSeq == seq) {
 			evt.acked = true;
+			updated = true;
 			auto now = system_clock::now();
 			updateRTT(evt.sendTimestamp, now);
-			updated = true;
 		}
 	}
 	return updated;
@@ -276,7 +282,7 @@ void RSend::updateRTT(time_point<system_clock> send, time_point<system_clock> ba
 	double a = 0.125;
 	double RTT = (1 - a) * oldRTTms + a * newRTTms;
 	rtt = static_cast<uint32_t>(RTT);
-	rto = 2 * rtt;
+	rto = 5 * rtt;
 	printf("[LOG]: RTT rtt=%d,rto=%d.\n", rtt, rto);
 }
 
@@ -290,7 +296,7 @@ void RSend::setCongestionState(CongestionState cs)
 }
 
 //called when a new ack is received.
-void RSend::updateCongestionWindow()
+void RSend::updateCongestionWindow(uint32_t ack)
 {
 	//CON 拥塞控制
 	printf("[LOG]: <Congestion> NEW_ACK when %s cwnd=%d ssthresh=%d, ", enum_name(cState).data(),cwnd, ssthresh);
@@ -304,14 +310,21 @@ void RSend::updateCongestionWindow()
 		}
 		break;
 	case CongestionState::avoid:
-		cwnd += MSS * (MSS / cwnd);
+		cwnd += (uint32_t)MSS * (uint32_t)MSS / cwnd;
 		printf("update cwnd=%d.\n",cwnd);
 		break;
 	case CongestionState::fastRecovery:
-		cwnd = ssthresh;
-		dupACK = 0;
-		printf("update cwnd=%d, dupACK=%d.\n", cwnd, dupACK);
-		setCongestionState(CongestionState::avoid);
+		if (ack > lastSeq) { //部分应答
+			printf("update cwnd=%d, dupACK=%d ", cwnd, dupACK);
+			printf("PARTIAL_ACK.\n");
+		}
+		else { //恢复应答
+			cwnd = ssthresh;
+			dupACK = 0;
+			printf("REC_ACK.\n");
+			setCongestionState(CongestionState::avoid);
+		}
+		break;
 	}
 }
 

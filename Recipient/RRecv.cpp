@@ -57,17 +57,17 @@ void RRecv::manager()
 			printf("[LOG]: RECV [%d,%d), flags=%d.\n",rPkg->getSEQ(), rPkg->getSEQ()+rPkg->getBodySize(),rPkg->flags);
 			if (rPkg->flags & RPkg::F_SYN) {
 				nextACK = rPkg->getSEQ();
-				sendAck(nextACK, getWindow());
+				sendAck(nextACK, getWindow(), rPkg->getSEQ());
 				setState(State::recv);
 			}
 			if (rPkg->flags & RPkg::F_SEQ) {
 				deliverData(rPkg->getSEQ(),rPkg->getBodySize(),rPkg->data);
-				sendAck(nextACK, getWindow());
+				sendAck(nextACK, getWindow(), rPkg->getSEQ());
 				setState(State::recv);
 			}
 			if (rPkg->flags & RPkg::F_FIN) {
 				nextACK = rPkg->getSEQ() + rPkg->getBodySize();
-				sendAck(nextACK, getWindow());
+				sendAck(nextACK, getWindow(), rPkg->getSEQ());
 				setState(State::closed);
 			}
 			continue;
@@ -124,10 +124,10 @@ RPkg* RRecv::recvPkg()
 	return rPkg;
 }
 
-void RRecv::sendAck(uint32_t ack, uint16_t window)
+void RRecv::sendAck(uint32_t ack, uint16_t window,uint32_t seq)
 {
 	RPkg sPkg;
-	sPkg.makeACK(nextACK, getWindow());
+	sPkg.makeACK(nextACK, getWindow(), seq);
 	sPkg.setCheckSum(sPkg.calCheckSum());
 	socket.sendto((char*)&sPkg, sPkg.size(), targetAddr, targetPort);
 	printf("[LOG]: SEND ACK ,ack=%d, rwnd=%d.\n", sPkg.getACK(), sPkg.getWindow());
@@ -149,29 +149,31 @@ void RRecv::deliverData(uint32_t seq, uint16_t size, const char* data)
 		nextACK += pushnum;
 		printf("[LOG]: PUSH %d bytes into buffer, buffer:[%d,%d).\n",
 			pushnum,buffer.begin(), buffer.end());
+		uint32_t oldACK = nextACK;
 		while (!cacheRanges.empty()) {  //ºÏ²¢»º´æ
 			uint32_t nextCachedBegin = cacheRanges.front().first;
 			uint32_t nextCachedEnd = cacheRanges.front().second;
 			if (nextACK < nextCachedBegin) break;
 			if (nextACK < nextCachedEnd) {
-				uint32_t pushnum = buffer.push(nextCachedEnd - nextACK);
-				printf("[LOG]: PUSH %d bytes into buffer, buffer:[%d,%d).\n",
-					pushnum, buffer.begin(), buffer.end());
-				assert(pushnum == nextCachedEnd - nextACK);
 				nextACK = nextCachedEnd;
 			}
 			cacheRanges.pop_front();
 			printf("[LOG]: MERGE cache[%d,%d), nextack:%d.\n", nextCachedBegin, nextCachedEnd, nextACK);
 		}
+		pushnum = buffer.push(nextACK - oldACK);
+		assert(pushnum == nextACK - oldACK);
+		printf("[LOG]: PUSH %d bytes into buffer, buffer:[%d,%d).\n",
+			pushnum, buffer.begin(), buffer.end());
+
 	}
 	else { //cache data in buffer
-		uint32_t begin = buffer.end()+ seq - nextACK;
-		uint32_t setnum=buffer.set(begin,data,size);
-		auto range = make_pair(seq, seq + setnum);
-		printf("[LOG]: CACHE %d bytes in rwnd:[%d,%d).\n", setnum,range.first,range.second);
 		auto iter = cacheRanges.begin();
-		while (iter!= cacheRanges.end() && iter->first < range.first) iter++;
-		cacheRanges.insert(iter,range);
+		while (iter->first < seq) iter++;
+		auto range = make_pair(seq, min(seq + size, iter->first));
+		uint32_t setnum = buffer.set(range.first, data, range.second - range.first);
+		printf("[LOG]: CACHE %d bytes in rwnd:[%d,%d).\n", setnum, range.first, range.second);
+		range.second = range.first + setnum;
+		cacheRanges.insert(iter, range);
 	}
 }
 

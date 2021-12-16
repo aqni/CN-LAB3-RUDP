@@ -65,12 +65,12 @@ private:
     std::chrono::milliseconds handleTimer(); //处理定时器，并返回下一定时器的时间
     void processTimeout(const Timevt& evt);
     void setState(State s);
-    bool updateTimer(uint32_t seq, uint32_t ack);
+    bool updateTimer(uint32_t ack,uint32_t seq);
     void updateRTT(std::chrono::time_point<std::chrono::system_clock> send, std::chrono::time_point<std::chrono::system_clock> back);
 
     //CON 拥塞控制
     void setCongestionState(CongestionState cs);
-    void updateCongestionWindow();
+    void updateCongestionWindow(uint32_t ack);
 
 private:
     std::vector<Timevt> timevts;
@@ -93,12 +93,13 @@ private:
     //window
     uint32_t nextSeq = 0;
     uint32_t rwnd = 0;
-    uint32_t rtt = 10; //ms
-    uint32_t rto = 20; //ms
+    uint32_t rtt = 50; //ms
+    uint32_t rto = 2*rtt; //ms
 
     //CON 拥塞控制
     uint32_t cwnd = MSS;
     uint32_t ssthresh=8*MSS;
     unsigned dupACK = 0;//the count of duplicate ack.
     uint32_t lastAck = 0;
+    uint32_t lastSeq = nextSeq;
 };

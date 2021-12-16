@@ -16,7 +16,7 @@ struct RPkg
 public:
     inline void makeSYN(uint32_t seq) { this->seq = hToN(seq); bodySize = 0; flags = F_SYN;}
     inline void makeFIN(uint32_t seq) { this->seq = hToN(seq); bodySize = 0; flags = F_FIN;};
-    inline void makeACK(uint32_t ack, uint16_t win) { this->ack = hToN(ack);  window = hToN(win); flags = F_ACK;}
+    inline void makeACK(uint32_t ack, uint16_t win,uint32_t seq) { this->ack = hToN(ack);  window = hToN(win); flags = F_ACK; this->seq = hToN(seq);}
     inline void makeSEQ(uint32_t s, uint16_t bsize) { seq = hToN(s); bodySize = hToN(bsize); flags = F_SEQ;}
     inline uint32_t getACK()const { return nToH(ack); }
     inline uint32_t getSEQ()const { return nToH(seq); };
